@@ -372,7 +372,12 @@ if uploaded_file:
     col_opts = list(df_raw.columns)
 
     if detected_any:
-        st.success(f"✅ 自动识别到：标题={detected['标题']} | 正文={detected['正文']} | 渠道={detected['渠道']}")
+        detected_label = [k for k, v in detected.items() if v]
+        st.success(
+            f"✅ 自动识别到 {len(detected_label)} 个字段：" + " | ".join(
+                f"{k}={v}" for k, v in detected.items() if v
+            )
+        )
         if detected["标题"]:
             st.caption("如需手动调整列映射，请展开下方「手动映射」")
     else:
