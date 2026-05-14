@@ -479,7 +479,7 @@ if uploaded_file:
             st.download_button("下载结果CSV", csv_out, "ctr_prediction_result.csv", "text/csv")
 
 else:
-    st.markdown("### 期待文件格式示例（仅需填以下列，标题字数自动计算）")
+    st.markdown("#### 文件格式示例")
     st.dataframe(pd.DataFrame({
         "文案标题":  [
             "仅剩3天！0元领麦当劳薯条",
@@ -554,5 +554,4 @@ else:
             "Chicken",
         ],
     }), use_container_width=True)
-    st.caption("标题 + 正文必填；其余列选填（填了预测更准）")
-    st.caption("标题字数自动计算，无需在Excel里预填")
+    st.caption("标题 + 正文必填；其余列选填（填了预测更准）；标题字数自动计算，无需在Excel里预填")
