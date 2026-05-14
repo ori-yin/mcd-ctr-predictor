@@ -177,11 +177,11 @@ def build_context_for_llm(baseline: dict) -> str:
     if char_data:
         lines.append("\n各渠道最优标题字数：")
         for ch, sug in OPTIMAL_CHARS.items():
-            lines.append(f"  {ch}: {sug}")
+            lines.append(f"  标题字数建议（参考，降权）：{sug}")
 
     plan_data = d.get("渠道_x_计划类型", {}).get("data", {})
     if plan_data:
-        lines.append("\nAARRPlan vs 普通Plan（AARRPlan为算法精准触达）：")
+        lines.append("\nAARRPlan vs 常规Plan（AARRPlan为算法精准触达）：")
         for k, v in sorted(plan_data.items(), key=lambda x: -x[1]):
             lines.append(f"  {k}: {v*100:.2f}%")
 
@@ -227,7 +227,7 @@ def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context:
         owner    = str(row.get("预算Owner", "")).strip()
 
         # Build baseline context for this row
-        plan_v = plan if plan in ("AARRPlan", "普通Plan") else None
+        plan_v = plan if plan in ("AARRPlan", "普通Plan", "常规Plan") else None
         bl_ctr = get_baseline_ctr(channel, coupon or None,
                                   workday or None, plan_v, owner or None)
         bl_str = f"{bl_ctr*100:.3f}%" if bl_ctr else "未知"
@@ -248,6 +248,7 @@ def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context:
 {chr(10).join(batch_text)}
 
 请预测每条文案的CTR，并给出具体改进建议。
+【重要】标题字数仅供参考，不是主要因素，权重低于渠道、时段和内容质量。
 输出格式：严格JSON数组，每条包含：
 - "pred_ctr": 预测CTR小数（如0.025=2.5%，需综合基准CTR、时段系数、内容质量判断）
 - "confidence": 置信度0-1（信息越充分越接近1）
