@@ -470,7 +470,12 @@ if uploaded_file:
             rename_cols = {"标题":"标题","渠道":"渠道","标题字数":"字数","渠道基准":"基准CTR",
                            "预测CTR":"预测CTR","置信度":"置信度","改进建议":"改进建议",
                            "字数建议":"字数建议","时段建议":"时段建议"}
-            st.dataframe(df_w[disp_cols].rename(columns=rename_cols), use_container_width=True, height=400)
+            # Format CTR column for display
+            df_disp = df_w[disp_cols].rename(columns=rename_cols).copy()
+            df_disp["预测CTR"] = df_disp["预测CTR"].apply(
+                lambda x: f"{x*100:.3f}%" if pd.notna(x) else ""
+            )
+            st.dataframe(df_disp, use_container_width=True, height=400, hide_index=True)
 
             # Download
             out_cols = ["标题","内容","渠道","是否用券","工作日类型","发送时间","计划类型","预算Owner",
