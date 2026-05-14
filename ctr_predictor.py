@@ -407,7 +407,7 @@ if uploaded_file:
     missing_title = not detected["标题"]
     st.dataframe(df_w[["标题","渠道","是否用券","工作日类型","发送时间","计划类型","预算Owner"]].head(3), use_container_width=True)
 
-    if st.button("开始预测CTR", type="primary", disabled=(not api_key or missing_title)):
+    if st.button("开始预测", type="primary", disabled=(not api_key or missing_title)):
         if not api_key:
             st.error("请先填API Key")
         elif not df_w["标题"].str.strip().str.replace("nan","").any():
@@ -422,7 +422,6 @@ if uploaded_file:
             for start in range(0, total, batch_size):
                 end = min(start + batch_size, total)
                 batch = df_w.iloc[start:end].to_dict("records")
-                status.text(f"处理第{start+1}-{end}条，共{total}条...")
                 results.extend(call_llm_batch(api_key, provider, batch, model, context_str))
                 pb.progress(end / total)
                 if end < total:
