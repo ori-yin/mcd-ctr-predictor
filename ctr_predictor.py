@@ -201,6 +201,8 @@ def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context:
 
     if provider == "SiliconFlow":
         base_url = "https://api.siliconflow.cn/v1"
+    elif provider == "百度千帆":
+        base_url = "https://qianfan.baidubce.com/v2/coding"
     elif provider == "OpenAI":
         base_url = None
     else:
@@ -293,9 +295,10 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### 配置")
     api_key   = st.text_input("API Key（自己填）", type="password")
-    provider  = st.selectbox("Provider", ["SiliconFlow", "OpenAI"], help="推荐SiliconFlow")
+    provider  = st.selectbox("API Provider", ["SiliconFlow", "百度千帆", "OpenAI"], help="推荐SiliconFlow或百度千帆（国内快）")
     model_map = {
         "SiliconFlow": ["deepseek-ai/DeepSeek-V3-0324", "Qwen/Qwen2.5-72B-Instruct", "anthropic/claude-3.5-sonnet"],
+        "百度千帆":    ["qianfan-code-latest"],
         "OpenAI": ["gpt-4o-mini", "gpt-4o"],
     }
     model      = st.selectbox("模型", model_map[provider])
