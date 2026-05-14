@@ -10,9 +10,6 @@ import pandas as pd
 import json
 import re
 import time
-import os
-from datetime import datetime, date
-from io import StringIO, BytesIO
 
 # ── Page Config ───────────────────────────────────────────────────
 st.set_page_config(
@@ -33,15 +30,7 @@ def load_baseline(path: str = "ctr_baseline.json") -> dict:
 BASELINE = load_baseline()
 
 # ── Constants ─────────────────────────────────────────────────────
-CHANNEL_DISPLAY = {
-    "APP Push": "APP Push",
-    "企微1v1": "企微1v1",
-    "微信公众号推文": "微信公众号推文",
-    "微信小程序订阅消息": "微信小程序订阅消息",
-    "微信订阅": "微信订阅",
-    "短信": "短信",
-}
-CHANNEL_KEYS = list(CHANNEL_DISPLAY.values())
+CHANNEL_KEYS = ["APP Push", "企微1v1", "微信公众号推文", "微信小程序订阅消息", "微信订阅", "短信"]
 
 OPTIMAL_CHARS = {
     "APP Push": "5-12字",
@@ -52,141 +41,189 @@ OPTIMAL_CHARS = {
     "短信": "9-12字",
 }
 
-# ── Title Analysis Helpers ─────────────────────────────────────────
+# ── Baseline lookup ────────────────────────────────────────────────
+def get_baseline_ctr(channel: str, coupon: str = None, workday: str = None, char_range: str = None) -> float:
+    ch = channel.strip()
+    d = BASELINE.get("dimensions", {})
+
+    if char_range and ch in d.get("渠道_x_标题字数", {}).get("data", {}):
+        v = d["渠道_x_标题字数"]["data"].get(f"{ch}_{char_range}")
+        if v:
+            return v
+
+    if coupon in ("是", "否"):
+        v = d.get("渠道_x_是否用券", {}).get("data", {}).get(f"{ch}_{coupon}")
+        if v:
+            return v
+
+    if workday in ("工作日", "非工作日"):
+        v = d.get("渠道_x_工作日类型", {}).get("data", {}).get(f"{ch}_{workday}")
+        if v:
+            return v
+
+    return d.get("渠道", {}).get("data", {}).get(ch, None)
+
+def get_time_multiplier(time_str: str) -> float:
+    """Get CTR multiplier for a given time string. Returns 1.0 if no data."""
+    if not time_str:
+        return 1.0
+    m = re.search(r"\b(\d{1,2})\b", str(time_str))
+    if not m:
+        return 1.0
+    hour = int(m.group(1))
+    td = BASELINE.get("dimensions", {}).get("时段_小时", {}).get("data", {})
+    if not td:
+        return 1.0
+    vals = list(td.values())
+    overall_avg = sum(vals) / len(vals)
+    hour_ctr = td.get(f"{hour}时", overall_avg)
+    mult = hour_ctr / overall_avg if overall_avg else 1.0
+    return max(0.5, min(2.5, mult))  # clamp to [0.5, 2.5]
+
+def get_time_suggestion(time_str: str, channel: str) -> str:
+    """Suggest optimal time for the given channel."""
+    suggestions = {
+        "APP Push": "11-14时",
+        "企微1v1": "17-18时",
+        "微信小程序订阅消息": "5-8时",
+        "短信": "9-12时",
+    }
+    opt = suggestions.get(channel.strip(), "参考时段数据")
+    mult = get_time_multiplier(time_str)
+    return f"建议发送时间：{opt}（当前时段系数：{mult:.2f}）"
+
+# ── Title helpers ─────────────────────────────────────────────────
 def count_chars(text: str) -> int:
     return len(str(text).strip())
 
 def suggest_char_range(channel: str, title: str) -> str:
     n = count_chars(title)
-    optimal = OPTIMAL_CHARS.get(channel, "未知")
-    lo, hi = optimal.split("-")
-    lo_n, hi_n = int(lo.replace("字", "")), int(hi.replace("字", ""))
+    optimal = OPTIMAL_CHARS.get(channel.strip(), "未知")
+    if optimal == "未知":
+        return ""
+    lo_s, hi_s = optimal.split("-")
+    lo_n = int(lo_s.replace("字", ""))
+    hi_n = int(hi_s.replace("字", ""))
     if lo_n <= n <= hi_n:
         return f"字数{n}字，在{optimal}最优区间内"
     elif n < lo_n:
-        return f"字数{n}字，偏短，建议增加到{optimal}（当前短{lo_n - n}字）"
+        return f"字数{n}字，偏短，建议{optimal}（当前短{lo_n - n}字）"
     else:
-        return f"字数{n}字，偏长，建议精简到{optimal}（当前长{n - hi_n}字）"
-
-def get_baseline_ctr(channel: str, coupon: str = None, workday: str = None, char_range: str = None) -> float:
-    ch = channel.strip()
-    d = BASELINE.get("dimensions", {})
-
-    # 渠道 × 字数
-    if char_range and ch in d.get("渠道_x_标题字数", {}).get("data", {}):
-        key = f"{ch}_{char_range}"
-        v = d["渠道_x_标题字数"]["data"].get(key)
-        if v:
-            return v
-
-    # 渠道 × 用券
-    if coupon in ("是", "否") and ch in d.get("渠道_x_是否用券", {}).get("data", {}):
-        key = f"{ch}_{coupon}"
-        v = d["渠道_x_是否用券"]["data"].get(key)
-        if v:
-            return v
-
-    # 渠道 × 工作日类型
-    if workday in ("工作日", "非工作日") and ch in d.get("渠道_x_工作日类型", {}).get("data", {}):
-        key = f"{ch}_{workday}"
-        v = d["渠道_x_工作日类型"]["data"].get(key)
-        if v:
-            return v
-
-    # 渠道基准
-    return d.get("渠道", {}).get("data", {}).get(ch, None)
+        return f"字数{n}字，偏长，建议{optimal}（当前长{n - hi_n}字）"
 
 def build_context_for_llm(baseline: dict) -> str:
-    """Build a compact context string for the LLM prompt."""
     d = baseline.get("dimensions", {})
-    lines = ["【麦当劳Push CTR基准参考】", "(数值为小数，0.0355 = 3.55%)"]
+    lines = ["【麦当劳Push CTR基准参考】（数值为小数，0.0355 = 3.55%）"]
+
     ch_data = d.get("渠道", {}).get("data", {})
     if ch_data:
-        lines.append("\n各渠道CTR基准：")
-        for k, v in ch_data.items():
+        lines.append("各渠道CTR基准：")
+        for k, v in sorted(ch_data.items(), key=lambda x: -x[1]):
             lines.append(f"  {k}: {v*100:.2f}%")
+
     coupon_data = d.get("渠道_x_是否用券", {}).get("data", {})
     if coupon_data:
-        lines.append("\n用券提升效果（带券CTR > 不带券CTR）：")
-        for k, v in coupon_data.items():
+        lines.append("用券效果（带券 > 不带券）：")
+        for k, v in sorted(coupon_data.items(), key=lambda x: -x[1])[:8]:
             lines.append(f"  {k}: {v*100:.2f}%")
+
+    time_data = d.get("时段_小时", {}).get("data", {})
+    if time_data:
+        lines.append("时段CTR（小时粒度，跨渠道加权）：")
+        for k, v in sorted(time_data.items()):
+            lines.append(f"  {k}: {v*100:.3f}%")
+
+    char_data = d.get("渠道_x_标题字数", {}).get("data", {})
+    if char_data:
+        lines.append("标题字数建议：")
+        for ch, sug in OPTIMAL_CHARS.items():
+            lines.append(f"  {ch}: {sug}")
+
     return "\n".join(lines)
 
 # ── LLM Call ───────────────────────────────────────────────────────
 def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context: str) -> list:
-    """Call LLM for a batch of rows, return list of {'pred_ctr': float, 'suggestion': str}"""
     if not api_key:
-        return [{"pred_ctr": None, "suggestion": "请先填写API Key"}] * len(rows)
+        return [{"pred_ctr": None, "confidence": 0, "suggestion": "请先填写API Key"}] * len(rows)
 
-    import openai
-    openai.api_key = api_key
+    if provider == "SiliconFlow":
+        base_url = "https://api.siliconflow.cn/v1"
+    elif provider == "OpenAI":
+        base_url = None
+    else:
+        return [{"pred_ctr": None, "confidence": 0, "suggestion": f"不支持: {provider}"}] * len(rows)
 
-    # Build the prompt
+    try:
+        import openai
+    except ImportError:
+        return [{"pred_ctr": None, "confidence": 0, "suggestion": "请安装 openai: pip install openai"}] * len(rows)
+
+    if base_url:
+        client = openai.OpenAI(api_key=api_key, base_url=base_url)
+    else:
+        client = openai.OpenAI(api_key=api_key)
+
     batch_text = []
     for i, row in enumerate(rows, 1):
-        title = str(row.get("标题", row.get("文案标题", "")))
+        title   = str(row.get("标题", row.get("文案标题", "")))
         content = str(row.get("内容", row.get("文案", "")))
         channel = str(row.get("渠道", ""))
-        coupon = str(row.get("是否用券", ""))
+        coupon  = str(row.get("是否用券", ""))
         workday = str(row.get("工作日类型", ""))
-        baseline_ctr = get_baseline_ctr(channel, coupon, workday)
-        baseline_str = f"{baseline_ctr*100:.2f}%" if baseline_ctr else "未知"
+        time_s  = str(row.get("发送时间", ""))
+
+        baseline_ctr = get_baseline_ctr(channel, coupon if coupon in ("是","否") else None,
+                                        workday if workday in ("工作日","非工作日") else None)
+        base_str = f"{baseline_ctr*100:.3f}%" if baseline_ctr else "未知"
+        time_mult = get_time_multiplier(time_s)
         batch_text.append(
-            f"【{i}】\n标题：{title}\n正文：{content}\n渠道：{channel or '未填'}\n是否用券：{coupon or '未填'}\n工作日类型：{workday or '未填'}\n该渠道基准CTR：{baseline_str}"
+            f"【{i}】标题：{title}｜正文：{content}｜渠道：{channel or '未填'}"
+            f"｜用券：{coupon or '未填'}｜工作日类型：{workday or '未填'}｜发送时间：{time_s or '未填'}"
+            f"｜基准CTR：{base_str}｜时段系数：{time_mult:.2f}"
         )
 
-    prompt = f"""你是一个专业的麦当劳中国Push文案效果优化专家。
+    prompt = f"""你是一个麦当劳中国Push文案CTR优化专家。
 
 {context}
 
-以下是要预测的文案（每条包含标题+正文+渠道+用券情况）：
-
+以下是要预测的文案：
 {chr(10).join(batch_text)}
 
-请对每条文案预测CTR并给出改进建议。CTR预测需结合渠道基准、内容质量（利益点、紧迫感、标题吸引力）、用券效果等因素。
-输出格式要求：严格JSON数组格式，每条对应一个对象，包含字段：
-- "pred_ctr": 预测CTR（小数，如0.025表示2.5%），需结合基准CTR和内容质量综合判断
-- "confidence": 预测置信度（0-1之间，取决于你掌握的信息充分程度）
-- "suggestion": 改进建议（50字以内，中文，具体到文案本身）
+请预测每条文案的CTR，并给出具体改进建议。
+输出格式：严格JSON数组，每条包含：
+- "pred_ctr": 预测CTR小数（如0.025=2.5%，需结合基准CTR、时段系数、内容质量综合判断）
+- "confidence": 置信度0-1（信息越充分越接近1）
+- "suggestion": 改进建议（30字内，具体到文案本身）
 
-JSON数组（直接返回，不要有其他文字）："""
+直接返回JSON数组，不要其他文字："""
 
     try:
-        if provider == "OpenAI":
-            client = openai.OpenAI(api_key=api_key)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=2000,
-            )
-            raw = resp.choices[0].message.content.strip()
-        elif provider == "SiliconFlow":
-            client = openai.OpenAI(api_key=api_key, base_url="https://api.siliconflow.cn/v1")
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=2000,
-            )
-            raw = resp.choices[0].message.content.strip()
-        else:
-            return [{"pred_ctr": None, "suggestion": f"不支持的Provider: {provider}"}] * len(rows)
-
-        # Parse JSON
-        raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-        raw = re.sub(r"\s*```$", "", raw.strip())
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=3000,
+        )
+        raw = resp.choices[0].message.content.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
         results = json.loads(raw)
         if len(results) != len(rows):
-            results = (results + [{"pred_ctr": None, "suggestion": "解析数量不匹配"}] * len(rows))[:len(rows)]
+            results = (results + [{}] * len(rows))[:len(rows)]
+        for r in results:
+            if "pred_ctr" not in r:
+                r["pred_ctr"] = None
+            if "confidence" not in r:
+                r["confidence"] = None
+            if "suggestion" not in r:
+                r["suggestion"] = "解析异常"
         return results
     except json.JSONDecodeError as e:
-        return [{"pred_ctr": None, "suggestion": f"JSON解析失败: {str(e)[:30]}"}] * len(rows)
+        return [{"pred_ctr": None, "confidence": None, "suggestion": f"JSON失败: {str(e)[:40]}"}] * len(rows)
     except Exception as e:
-        return [{"pred_ctr": None, "suggestion": f"API错误: {str(e)[:50]}"}] * len(rows)
+        return [{"pred_ctr": None, "confidence": None, "suggestion": f"API错误: {str(e)[:50]}"}] * len(rows)
 
 # ── Streamlit UI ──────────────────────────────────────────────────
-# Header
 st.markdown("""
 <div style="background:#DA291C;padding:16px 20px;border-radius:12px;margin-bottom:20px">
     <div style="color:white;font-size:20px;font-weight:bold;">MCD CTR 预测工具</div>
@@ -194,177 +231,134 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar config
 with st.sidebar:
     st.markdown("### 配置")
-    api_key = st.text_input("API Key", type="password", help="OpenAI或SiliconFlow密钥")
-    provider = st.selectbox("Provider", ["SiliconFlow", "OpenAI"], help="推荐SiliconFlow（国内访问快）")
-    model_options = {
+    api_key  = st.text_input("API Key（自己填）", type="password")
+    provider = st.selectbox("Provider", ["SiliconFlow", "OpenAI"], help="推荐SiliconFlow（国内快）")
+    model_map = {
         "SiliconFlow": ["deepseek-ai/DeepSeek-V3-0324", "Qwen/Qwen2.5-72B-Instruct", "anthropic/claude-3.5-sonnet"],
         "OpenAI": ["gpt-4o-mini", "gpt-4o"],
     }
-    model = st.selectbox("模型", model_options[provider])
+    model     = st.selectbox("模型", model_map[provider])
+    batch_size = st.selectbox("每批条数", [5, 10, 15, 20], index=1)
 
     st.markdown("---")
-    st.markdown("### 批次设置")
-    batch_size = st.selectbox("每批处理条数", [5, 10, 15, 20], index=1)
+    st.markdown("### 渠道基准CTR")
+    ch_data = BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {})
+    for k, v in sorted(ch_data.items(), key=lambda x: -x[1]):
+        st.markdown(f"**{k}**: {v*100:.2f}%")
 
     st.markdown("---")
-    st.markdown("### 基准CTR（参考）")
-    if BASELINE.get("dimensions", {}).get("渠道"):
-        for ch, ctr in BASELINE["dimensions"]["渠道"]["data"].items():
-            st.markdown(f"**{ch}**: {ctr*100:.2f}%")
+    st.markdown("### 时段CTR（小时）")
+    td = BASELINE.get("dimensions", {}).get("时段_小时", {}).get("data", {})
+    if td:
+        for h, ctr in sorted(td.items(), key=lambda x: int(x[0].replace("时",""))):
+            bar_w = int(ctr / max(td.values()) * 30)
+            st.markdown(f"{h} `{ctr*100:.3f}%` {'█'*bar_w}")
     else:
-        st.info("未找到 ctr_baseline.json，请确保文件在工作目录下")
+        st.info("未找到时段数据")
 
     st.markdown("---")
     st.markdown("### 使用说明")
     st.markdown("""
-    1. 上传CSV/Excel（标题+正文列必填）
-    2. 可选：渠道/是否用券/工作日类型
-    3. 填API Key（自己提供）
-    4. 点击预测，等待完成
-    5. 下载结果CSV
+    1. 上传CSV/Excel（标题+正文必填）
+    2. 可选：渠道/用券/工作日类型/发送时间
+    3. 填API Key，点预测
+    4. 下载结果
     """)
 
 # Main area
 uploaded_file = st.file_uploader(
-    "上传CSV或Excel文件",
+    "上传CSV或Excel（标题+正文必填）",
     type=["csv", "xlsx", "xls"],
-    help="文件需包含：标题列（文案标题/标题）、正文列（文案/内容）\n可选：渠道、是否用券、工作日类型"
 )
 
 if uploaded_file:
-    # Read file
-    if uploaded_file.name.endswith(".xlsx") or uploaded_file.name.endswith(".xls"):
-        df_raw = pd.read_excel(uploaded_file)
-    else:
-        df_raw = pd.read_csv(uploaded_file)
+    df_raw = pd.read_excel(uploaded_file) if uploaded_file.name.endswith(("xlsx","xls")) else pd.read_csv(uploaded_file)
+    st.markdown(f"**{uploaded_file.name}** — {len(df_raw)}行 × {len(df_raw.columns)}列")
 
-    st.markdown(f"**已上传：** {uploaded_file.name} | {len(df_raw)} 行 × {len(df_raw.columns)} 列")
+    col_opts = list(df_raw.columns)
+    col_title   = st.selectbox("标题列", col_opts, index=0)
+    col_content = st.selectbox("正文列", col_opts, index=min(1, len(col_opts)-1))
 
-    # Column mapping
-    col_options = list(df_raw.columns)
-    col_title = st.selectbox("标题列", col_options,
-        index=col_options.index(col_options[0]) if "标题" in col_options[0] else 0)
-    col_content = st.selectbox("正文列", col_options,
-        index=col_options.index(col_options[0]) if "内容" in col_options[0] else 0)
+    with st.expander("可选列映射（不填留空）"):
+        col_channel = st.selectbox("渠道", ["（不填）"] + col_opts)
+        col_coupon  = st.selectbox("是否用券", ["（不填）"] + col_opts)
+        col_workday = st.selectbox("工作日类型", ["（不填）"] + col_opts)
+        col_time    = st.selectbox("发送时间（10:20格式）", ["（不填）"] + col_opts)
 
-    # Optional columns
-    with st.expander("可选列映射（不填则留空）"):
-        col_channel = st.selectbox("渠道列", ["（不填）"] + col_options)
-        col_coupon = st.selectbox("是否用券列", ["（不填）"] + col_options)
-        col_workday = st.selectbox("工作日类型列", ["（不填）"] + col_options)
+    df_w = df_raw.copy()
+    df_w["标题"]       = df_w[col_title].astype(str)
+    df_w["内容"]       = df_w[col_content].astype(str)
+    df_w["渠道"]       = df_w[col_channel].astype(str) if col_channel  != "（不填）" else ""
+    df_w["是否用券"]   = df_w[col_coupon].astype(str)  if col_coupon   != "（不填）" else ""
+    df_w["工作日类型"] = df_w[col_workday].astype(str) if col_workday != "（不填）" else ""
+    df_w["发送时间"]   = df_w[col_time].astype(str)   if col_time     != "（不填）" else ""
 
-    def get_val(row, col):
-        if col == "（不填）" or col not in row:
-            return ""
-        return str(row[col])
+    st.dataframe(df_w[["标题","渠道","是否用券","工作日类型","发送时间"]].head(5), use_container_width=True)
 
-    # Build working dataframe
-    df_work = df_raw.copy()
-    df_work["标题"] = df_work[col_title].astype(str)
-    df_work["内容"] = df_work[col_content].astype(str)
-    df_work["渠道"] = df_work[col_channel].astype(str) if col_channel != "（不填）" else ""
-    df_work["是否用券"] = df_work[col_coupon].astype(str) if col_coupon != "（不填）" else ""
-    df_work["工作日类型"] = df_work[col_workday].astype(str) if col_workday != "（不填）" else ""
-
-    # Show first few rows
-    st.markdown("**前5行预览：**")
-    st.dataframe(df_work[["标题", "渠道", "是否用券", "工作日类型"]].head(), use_container_width=True)
-
-    # Predict button
     if st.button("开始预测CTR", type="primary", disabled=not api_key):
         if not api_key:
-            st.error("请先在侧边栏填写API Key")
+            st.error("请先填API Key")
         else:
-            total = len(df_work)
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
+            total = len(df_w)
+            pb = st.progress(0)
+            status = st.empty()
             results = []
             context_str = build_context_for_llm(BASELINE)
 
-            # Process in batches
             for start in range(0, total, batch_size):
                 end = min(start + batch_size, total)
-                batch = df_work.iloc[start:end].to_dict("records")
-                status_text.text(f"正在处理第 {start+1}-{end} 条，共 {total} 条...")
-                batch_results = call_llm_batch(api_key, provider, batch, model, context_str)
-                results.extend(batch_results)
-                progress_bar.progress(end / total)
-                # Rate limit protection
+                batch = df_w.iloc[start:end].to_dict("records")
+                status.text(f"处理第{start+1}-{end}条，共{total}条...")
+                results.extend(call_llm_batch(api_key, provider, batch, model, context_str))
+                pb.progress(end / total)
                 if end < total:
-                    time.sleep(1)
+                    time.sleep(1.2)
 
-            status_text.text("处理完成！")
-            progress_bar.empty()
+            status.text("完成！")
+            pb.empty()
 
-            # Merge results
-            df_work["预测CTR"] = [r.get("pred_ctr") for r in results]
-            df_work["置信度"] = [r.get("confidence") for r in results]
-            df_work["改进建议"] = [r.get("suggestion") for r in results]
-
-            # Add char count + baseline comparison
-            df_work["标题字数"] = df_work["标题"].apply(count_chars)
-            df_work["字数建议"] = df_work.apply(
+            df_w["预测CTR"]    = [r.get("pred_ctr") for r in results]
+            df_w["置信度"]     = [r.get("confidence") for r in results]
+            df_w["改进建议"]   = [r.get("suggestion") for r in results]
+            df_w["标题字数"]   = df_w["标题"].apply(count_chars)
+            df_w["字数建议"]   = df_w.apply(
                 lambda r: suggest_char_range(r["渠道"], r["标题"]) if r["渠道"] else "", axis=1
             )
-
-            # Baseline CTR
-            def get_bl_ctr(row):
-                ch = row["渠道"].strip()
-                coupon = "是" if "是" in row["是否用券"] else ("否" if "否" in row["是否用券"] else None)
-                workday = row["工作日类型"].strip()
-                workday = workday if workday in ("工作日", "非工作日") else None
-                v = get_baseline_ctr(ch, coupon, workday)
-                return f"{v*100:.2f}%" if v else "—"
-
-            df_work["渠道基准CTR"] = df_work.apply(get_bl_ctr, axis=1)
-
-            # Summary
-            valid_preds = df_work["预测CTR"].dropna()
-            if len(valid_preds) > 0:
-                st.markdown("### 预测结果摘要")
-                col1, col2, col3 = st.columns(3)
-                col1.metric("平均预测CTR", f"{valid_preds.mean()*100:.3f}%")
-                col2.metric("最高CTR", f"{valid_preds.max()*100:.3f}%")
-                col3.metric("最低CTR", f"{valid_preds.min()*100:.3f}%")
-
-            st.markdown("### 预测结果")
-            display_cols = ["标题", "渠道", "是否用券", "标题字数", "渠道基准CTR", "预测CTR", "置信度", "改进建议"]
-            st.dataframe(
-                df_work[display_cols].rename(columns={
-                    "标题": "标题", "渠道": "渠道", "是否用券": "是否用券",
-                    "标题字数": "字数", "渠道基准CTR": "基准CTR", "预测CTR": "预测CTR",
-                    "置信度": "置信度", "改进建议": "改进建议"
-                }),
-                use_container_width=True, height=400
+            df_w["时段建议"]  = df_w.apply(
+                lambda r: get_time_suggestion(r["发送时间"], r["渠道"]) if r["发送时间"] or r["渠道"] else "", axis=1
+            )
+            df_w["渠道基准"]  = df_w.apply(
+                lambda r: f"{get_baseline_ctr(r['渠道'], r['是否用券'] if r['是否用券'] in ('是','否') else None, r['工作日类型'] if r['工作日类型'] in ('工作日','非工作日') else None)*100:.3f}%"
+                if get_baseline_ctr(r['渠道'], r['是否用券'] if r['是否用券'] in ('是','是') else None, None) else "—",
+                axis=1
             )
 
-            # Download
-            out_df = df_work[["标题", "内容", "渠道", "是否用券", "工作日类型",
-                               "标题字数", "渠道基准CTR", "预测CTR", "置信度", "改进建议", "字数建议"]]
-            csv_out = out_df.to_csv(index=False, encoding="utf-8-sig")
-            st.download_button(
-                "下载结果CSV",
-                csv_out,
-                file_name="ctr_prediction_result.csv",
-                mime="text/csv",
-            )
+            valid = df_w["预测CTR"].dropna()
+            if len(valid):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("平均预测CTR", f"{valid.mean()*100:.3f}%")
+                c2.metric("最高CTR", f"{valid.max()*100:.3f}%")
+                c3.metric("最低CTR", f"{valid.min()*100:.3f}%")
 
-            # Store in session state
-            st.session_state["result_df"] = out_df
+            disp = ["标题","渠道","标题字数","渠道基准","预测CTR","置信度","改进建议","字数建议","时段建议"]
+            st.dataframe(df_w[disp].rename(columns={
+                "标题":"标题","渠道":"渠道","标题字数":"字数","渠道基准":"基准CTR",
+                "预测CTR":"预测CTR","置信度":"置信度","改进建议":"改进建议","字数建议":"字数建议","时段建议":"时段建议"
+            }), use_container_width=True, height=400)
 
+            csv_out = df_w[["标题","内容","渠道","是否用券","工作日类型","发送时间",
+                             "标题字数","渠道基准","预测CTR","置信度","改进建议","字数建议","时段建议"]].to_csv(index=False, encoding="utf-8-sig")
+            st.download_button("下载结果CSV", csv_out, "ctr_prediction_result.csv", "text/csv")
 else:
-    # Show sample format
     st.markdown("### 期待文件格式")
-    sample = pd.DataFrame({
-        "文案标题": ["仅剩3天！免费领麦当劳薯条", "亲爱的会员，专属优惠等你来"],
+    st.dataframe(pd.DataFrame({
+        "文案标题": ["仅剩3天！免费领麦当劳薯条", "亲爱的会员，专属优惠等你"],
         "文案": ["戳我免费领...", "成为会员，享受..."],
         "渠道": ["APP Push", "企微1v1"],
         "是否用券": ["是", "否"],
         "工作日类型": ["工作日", "非工作日"],
-    })
-    st.dataframe(sample, use_container_width=True)
-    st.caption("标题+正文必填，渠道/用券/工作日类型可选（填了预测更准）")
+        "发送时间": ["10:30", "17:50"],
+    }), use_container_width=True)
+    st.caption("标题+正文必填；渠道/用券/工作日类型/发送时间可选（填了预测更准）")
