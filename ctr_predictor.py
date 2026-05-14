@@ -336,23 +336,70 @@ uploaded_file = st.file_uploader(
     type=["csv", "xlsx", "xls"],
 )
 
+# ── Auto-detect columns ───────────────────────────────────────
+KNOWN_TITLE_ALIASES   = ["标题", "文案标题", "title", "标题列", "push_title", "标题title"]
+KNOWN_BODY_ALIASES    = ["内容", "正文", "文案", "content", "body", "push_content", "正文内容"]
+KNOWN_CHANNEL_ALIASES = ["渠道", "channel", "触点", "push_channel"]
+KNOWN_COUPON_ALIASES  = ["是否用券", "用券", "coupon", "是否有券"]
+KNOWN_WORKDAY_ALIASES = ["工作日类型", "工作日", "workday", "日期类型"]
+KNOWN_TIME_ALIASES    = ["发送时间", "时间", "time", "推送时间", "send_time"]
+KNOWN_PLAN_ALIASES    = ["计划类型", "plan_type", "计划type", "AARRPlan"]
+KNOWN_OWNER_ALIASES   = ["预算owner", "owner", "预算Owner", "预算owner", "负责人"]
+
+def auto_detect(df, aliases):
+    for col in df.columns:
+        for alias in aliases:
+            if alias.lower() == col.lower() or alias in col.lower():
+                return col
+    return None
+
+def auto_detect_all(df) -> dict:
+    return {
+        "标题":       auto_detect(df, KNOWN_TITLE_ALIASES),
+        "正文":       auto_detect(df, KNOWN_BODY_ALIASES),
+        "渠道":       auto_detect(df, KNOWN_CHANNEL_ALIASES),
+        "是否用券":   auto_detect(df, KNOWN_COUPON_ALIASES),
+        "工作日类型": auto_detect(df, KNOWN_WORKDAY_ALIASES),
+        "发送时间":   auto_detect(df, KNOWN_TIME_ALIASES),
+        "计划类型":   auto_detect(df, KNOWN_PLAN_ALIASES),
+        "预算Owner":  auto_detect(df, KNOWN_OWNER_ALIASES),
+    }
+
 if uploaded_file:
-    df_raw = pd.read_excel(uploaded_file) if uploaded_file.name.endswith(("xlsx", "xls")) else pd.read_csv(uploaded_file)
+    try:
+        df_raw = pd.read_excel(uploaded_file) if uploaded_file.name.endswith(("xlsx", "xls")) else pd.read_csv(uploaded_file)
+    except ImportError:
+        st.error("❌ 读取Excel失败，请在本地安装 openpyxl 后重新上传，或改用CSV格式。")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ 读取文件失败：{str(e)}")
+        st.stop()
+
     st.markdown(f"**{uploaded_file.name}** — {len(df_raw)}行 × {len(df_raw.columns)}列")
 
+    # ── Auto-detect ────────────────────────────────────────────
+    detected = auto_detect_all(df_raw)
+    detected_any = any(v for v in detected.values())
     col_opts = list(df_raw.columns)
-    col_title   = st.selectbox("标题列", col_opts, index=0)
-    col_content = st.selectbox("正文列", col_opts, index=min(1, len(col_opts) - 1))
 
-    with st.expander("可选列映射（不填则留空）"):
-        col_channel = st.selectbox("渠道", ["（不填）"] + col_opts)
-        col_coupon  = st.selectbox("是否用券", ["（不填）"] + col_opts)
-        col_workday = st.selectbox("工作日类型", ["（不填）"] + col_opts)
-        col_time    = st.selectbox("发送时间", ["（不填）"] + col_opts)
-        col_plan    = st.selectbox("计划类型（AARRPlan/普通Plan）", ["（不填）"] + col_opts)
-        col_owner   = st.selectbox("预算Owner", ["（不填）"] + col_opts)
+    if detected_any:
+        st.success(f"✅ 自动识别到：标题={detected['标题']} | 正文={detected['正文']} | 渠道={detected['渠道']}")
+        if detected["标题"]:
+            st.caption("如需手动调整列映射，请展开下方「手动映射」")
+    else:
+        st.warning("⚠️ 未识别到必填列（标题/正文），请手动指定列映射")
 
-    # Prepare working df
+    with st.expander("手动映射（可覆盖自动识别）"):
+        col_title   = st.selectbox("标题列", col_opts, index=col_opts.index(detected["标题"]) if detected["标题"] in col_opts else 0)
+        col_content = st.selectbox("正文列", col_opts, index=col_opts.index(detected["正文"]) if detected["正文"] in col_opts else min(1, len(col_opts)-1))
+        col_channel = st.selectbox("渠道", ["（不填）"] + col_opts, index=(col_opts.index(detected["渠道"]) + 1) if detected["渠道"] in col_opts else 0)
+        col_coupon  = st.selectbox("是否用券", ["（不填）"] + col_opts, index=(col_opts.index(detected["是否用券"]) + 1) if detected["是否用券"] in col_opts else 0)
+        col_workday = st.selectbox("工作日类型", ["（不填）"] + col_opts, index=(col_opts.index(detected["工作日类型"]) + 1) if detected["工作日类型"] in col_opts else 0)
+        col_time    = st.selectbox("发送时间", ["（不填）"] + col_opts, index=(col_opts.index(detected["发送时间"]) + 1) if detected["发送时间"] in col_opts else 0)
+        col_plan    = st.selectbox("计划类型", ["（不填）"] + col_opts, index=(col_opts.index(detected["计划类型"]) + 1) if detected["计划类型"] in col_opts else 0)
+        col_owner   = st.selectbox("预算Owner", ["（不填）"] + col_opts, index=(col_opts.index(detected["预算Owner"]) + 1) if detected["预算Owner"] in col_opts else 0)
+
+    # ── Prepare working df ─────────────────────────────────────
     df_w = df_raw.copy()
     df_w["标题"]       = df_w[col_title].astype(str)
     df_w["内容"]       = df_w[col_content].astype(str)
@@ -363,11 +410,14 @@ if uploaded_file:
     df_w["计划类型"]   = df_w[col_plan].astype(str)    if col_plan     != "（不填）" else ""
     df_w["预算Owner"]  = df_w[col_owner].astype(str)   if col_owner    != "（不填）" else ""
 
+    missing_title = not detected["标题"]
     st.dataframe(df_w[["标题","渠道","是否用券","工作日类型","发送时间","计划类型","预算Owner"]].head(3), use_container_width=True)
 
-    if st.button("开始预测CTR", type="primary", disabled=not api_key):
+    if st.button("开始预测CTR", type="primary", disabled=(not api_key or missing_title)):
         if not api_key:
             st.error("请先填API Key")
+        elif not df_w["标题"].str.strip().str.replace("nan","").any():
+            st.error("标题列为空，请检查列映射是否正确")
         else:
             total = len(df_w)
             pb = st.progress(0)
