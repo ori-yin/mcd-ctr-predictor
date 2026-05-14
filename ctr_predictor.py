@@ -305,10 +305,10 @@ with st.sidebar:
     batch_size = st.selectbox("每批条数", [5, 10, 15, 20], index=1)
 
     st.markdown("---")
-with st.expander("渠道基准CTR（点击展开）", expanded=False):
-    BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {})
-    for k, v in sorted(ch_data.items(), key=lambda x: -x[1]):
-        st.markdown(f"**{k}**: {v*100:.2f}%")
+    with st.expander("渠道基准CTR（点击展开）", expanded=False):
+        ch_data = BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {})
+        for k, v in sorted(ch_data.items(), key=lambda x: -x[1]):
+            st.markdown(f"**{k}**: {v*100:.2f}%")
 
     st.markdown("---")
     st.markdown("### 使用说明")
