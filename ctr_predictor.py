@@ -53,7 +53,7 @@ def get_baseline_ctr(channel: str, coupon: str = None, workday: str = None,
         return d["渠道_x_标题字数"]["data"][f"{ch}_{char_range}"]
 
     # 渠道 × 计划类型
-    if plan_type in ("AARRPlan", "普通Plan") and f"{ch}_{plan_type}" in d.get("渠道_x_计划类型", {}).get("data", {}):
+    if plan_type in ("AARRPlan", "普通Plan", "常规Plan") and f"{ch}_{plan_type}" in d.get("渠道_x_计划类型", {}).get("data", {}):
         return d["渠道_x_计划类型"]["data"][f"{ch}_{plan_type}"]
 
     # 渠道 × 预算owner
