@@ -294,8 +294,8 @@ st.markdown("""
 # ── Sidebar ────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 配置")
-    api_key   = st.text_input("API Key（自己填）", type="password")
-    provider  = st.selectbox("API Provider", ["SiliconFlow", "百度千帆", "OpenAI"], help="推荐SiliconFlow或百度千帆（国内快）")
+    api_key   = st.text_input("API Key", type="password")
+    provider  = st.selectbox("API Provider", ["SiliconFlow", "百度千帆", "OpenAI"], index=1, help="推荐SiliconFlow或百度千帆（国内快）")
     model_map = {
         "SiliconFlow": ["deepseek-ai/DeepSeek-V3-0324", "Qwen/Qwen2.5-72B-Instruct", "anthropic/claude-3.5-sonnet"],
         "百度千帆":    ["qianfan-code-latest"],
@@ -305,21 +305,10 @@ with st.sidebar:
     batch_size = st.selectbox("每批条数", [5, 10, 15, 20], index=1)
 
     st.markdown("---")
-    st.markdown("### 渠道基准CTR")
-    ch_data = BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {})
+with st.expander("渠道基准CTR（点击展开）", expanded=False):
+    BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {})
     for k, v in sorted(ch_data.items(), key=lambda x: -x[1]):
         st.markdown(f"**{k}**: {v*100:.2f}%")
-
-    st.markdown("---")
-    st.markdown("### 时段CTR（小时）")
-    td = BASELINE.get("dimensions", {}).get("时段_小时", {}).get("data", {})
-    if td:
-        max_ctr = max(td.values())
-        for h, ctr in sorted(td.items(), key=lambda x: int(x[0].replace("时",""))):
-            bar_w = int(ctr / max_ctr * 28)
-            st.markdown(f"{h} `{ctr*100:.3f}%` {'█'*bar_w}")
-    else:
-        st.info("未找到时段数据")
 
     st.markdown("---")
     st.markdown("### 使用说明")
