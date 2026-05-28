@@ -302,7 +302,7 @@ st.markdown(f"""
 with st.sidebar:
     st.markdown("**API 配置**")
     with st.expander("API 配置", expanded=True):
-        api_key   = st.text_input("API Key", type="password")
+        api_key   = st.text_input("API Key", value="ce-v3/ALTAKSP-QmNPHghHzqzyoxZMVnzVo/c6b429d64ddc09c0c24d2c61a79ab30d1f1f5a55", type="password")
         provider  = st.selectbox("API Provider", ["SiliconFlow", "百度千帆", "OpenAI"], index=1, help="推荐SiliconFlow或百度千帆（国内快）")
         model_map = {
             "SiliconFlow": ["deepseek-ai/DeepSeek-V3-0324", "Qwen/Qwen2.5-72B-Instruct", "anthropic/claude-3.5-sonnet"],
