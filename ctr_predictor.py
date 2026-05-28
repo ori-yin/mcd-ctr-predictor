@@ -14,7 +14,7 @@ import time
 # ── Page Config ───────────────────────────────────────────────────
 st.set_page_config(
     page_title="MCD CTR 预测工具",
-    page_icon="",
+    page_icon="薯条",
     layout="wide",
 )
 
@@ -294,7 +294,7 @@ st.markdown("""
 
 # ── Sidebar ────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 配置")
+    st.markdown("### 配置中心")
     api_key   = st.text_input("API Key", type="password")
     provider  = st.selectbox("API Provider", ["SiliconFlow", "百度千帆", "OpenAI"], index=1, help="推荐SiliconFlow或百度千帆（国内快）")
     model_map = {
