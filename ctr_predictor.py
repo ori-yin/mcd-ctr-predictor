@@ -11,12 +11,18 @@ import json
 import re
 import time
 
+from styles import get_css, MCD_RED, MCD_GOLD, MCD_GREEN, MCD_BG
+
 # ── Page Config ───────────────────────────────────────────────────
 st.set_page_config(
     page_title="MCD CTR 预测工具",
     page_icon="薯条",
     layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+# ─── 注入样式 ─────────────────────────────────────────────────
+st.markdown(get_css(), unsafe_allow_html=True)
 
 # ── Load CTR Baseline ──────────────────────────────────────────────
 @st.cache_data
@@ -285,34 +291,36 @@ def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context:
 # ══════════════════════════════════════════════════════════════════
 #  UI
 # ══════════════════════════════════════════════════════════════════
-st.markdown("""
-<div style="background:#DA291C;padding:16px 20px;border-radius:12px;margin-bottom:20px">
-    <div style="color:white;font-size:20px;font-weight:bold;">MCD CTR 预测工具</div>
-    <div style="color:#FFC72C;font-size:13px;margin-top:4px;">上传文案 → LLM批量预测CTR + 改进建议</div>
+st.markdown(f"""
+<div class="mcd-header">
+  <h1>MCD CTR 预测工具</h1>
+  <p>上传文案 → LLM批量预测CTR + 改进建议</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ── Sidebar ────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 配置中心")
-    api_key   = st.text_input("API Key", type="password")
-    provider  = st.selectbox("API Provider", ["SiliconFlow", "百度千帆", "OpenAI"], index=1, help="推荐SiliconFlow或百度千帆（国内快）")
-    model_map = {
-        "SiliconFlow": ["deepseek-ai/DeepSeek-V3-0324", "Qwen/Qwen2.5-72B-Instruct", "anthropic/claude-3.5-sonnet"],
-        "百度千帆":    ["qianfan-code-latest"],
-        "OpenAI": ["gpt-4o-mini", "gpt-4o"],
-    }
-    model      = st.selectbox("模型", model_map[provider])
-    batch_size = st.selectbox("每批条数", [5, 10, 15, 20], index=1)
+    st.markdown("**API 配置**")
+    with st.expander("API 配置", expanded=True):
+        api_key   = st.text_input("API Key", type="password")
+        provider  = st.selectbox("API Provider", ["SiliconFlow", "百度千帆", "OpenAI"], index=1, help="推荐SiliconFlow或百度千帆（国内快）")
+        model_map = {
+            "SiliconFlow": ["deepseek-ai/DeepSeek-V3-0324", "Qwen/Qwen2.5-72B-Instruct", "anthropic/claude-3.5-sonnet"],
+            "百度千帆":    ["qianfan-code-latest"],
+            "OpenAI": ["gpt-4o-mini", "gpt-4o"],
+        }
+        model      = st.selectbox("模型", model_map[provider])
+        batch_size = st.selectbox("每批条数", [5, 10, 15, 20], index=1)
 
     st.markdown("---")
+    st.markdown("**渠道基准 CTR**")
     with st.expander("渠道基准CTR（点击展开）", expanded=False):
         ch_data = BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {})
         for k, v in sorted(ch_data.items(), key=lambda x: -x[1]):
             st.markdown(f"**{k}**: {v*100:.2f}%")
 
     st.markdown("---")
-    st.markdown("### 使用说明")
+    st.markdown("**使用说明**")
     st.markdown("""
     1. 上传CSV/Excel
     2. 必填：标题 + 正文
@@ -460,12 +468,15 @@ if uploaded_file:
             # Summary metrics
             valid = df_w["预测CTR"].dropna()
             if len(valid):
-                c1, c2, c3 = st.columns(3)
-                c1.metric("平均预测CTR", f"{valid.mean()*100:.3f}%")
-                c2.metric("最高CTR",     f"{valid.max()*100:.3f}%")
-                c3.metric("最低CTR",     f"{valid.min()*100:.3f}%")
+                st.markdown('<div class="section-title">预测结果概览</div>', unsafe_allow_html=True)
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("预测条数", f"{len(valid)} 条")
+                c2.metric("平均预测CTR", f"{valid.mean()*100:.3f}%")
+                c3.metric("最高CTR", f"{valid.max()*100:.3f}%")
+                c4.metric("最低CTR", f"{valid.min()*100:.3f}%")
 
             # Display table
+            st.markdown('<div class="section-title">预测详情</div>', unsafe_allow_html=True)
             disp_cols = ["标题","渠道","标题字数","渠道基准","预测CTR","置信度","改进建议","字数建议","时段建议"]
             rename_cols = {"标题":"标题","渠道":"渠道","标题字数":"字数","渠道基准":"基准CTR",
                            "预测CTR":"预测CTR","置信度":"置信度","改进建议":"改进建议",
@@ -481,12 +492,14 @@ if uploaded_file:
             out_cols = ["标题","内容","渠道","是否用券","工作日类型","发送时间","计划类型","预算Owner",
                         "标题字数","渠道基准","预测CTR","置信度","改进建议","字数建议","时段建议"]
             csv_out = df_w[out_cols].to_csv(index=False, encoding="utf-8-sig")
-            st.download_button("下载结果CSV", csv_out, "ctr_prediction_result.csv", "text/csv")
+            st.download_button("下载预测结果 CSV", csv_out, "ctr_prediction_result.csv", "text/csv", use_container_width=True)
 
 else:
+    st.markdown('<div class="section-title">文件格式示例</div>', unsafe_allow_html=True)
     st.markdown(
-        "**文件格式示例**&nbsp;&nbsp;"
-        "<span style='display:inline-block;border-radius:50%;width:18px;height:18px;background:#ddd;color:#333;font-size:13px;text-align:center;line-height:18px;cursor:pointer' title='必填：文案标题 / 正文&#10;选填：渠道、是否用券、工作日类型、发送时间、计划类型、预算Owner&#10;标题字数App自动计算，无需在Excel里填'>?</span>",
+        "<span style='font-size:13px; color:#888;'>必填：文案标题 / 正文&nbsp;&nbsp;|&nbsp;&nbsp;"
+        "选填：渠道、是否用券、工作日类型、发送时间、计划类型、预算Owner&nbsp;&nbsp;|&nbsp;&nbsp;"
+        "标题字数自动计算</span>",
         unsafe_allow_html=True,
     )
     st.dataframe(pd.DataFrame({
