@@ -11,7 +11,7 @@ import json
 import re
 import time
 
-from styles import get_css, MCD_RED, MCD_GOLD, MCD_GREEN, MCD_BG
+from styles import get_css
 
 # ── Page Config ───────────────────────────────────────────────────
 st.set_page_config(
@@ -46,6 +46,8 @@ OPTIMAL_CHARS = {
     "微信订阅": "7-14字",
     "短信": "9-12字",
 }
+# 注：ctr_baseline.json 的 渠道_x_标题字数.建议范围 也是一份"建议范围"，
+# 两处手工维护，改其中一处时请同步改另一处，避免漂移。
 
 # ── Baseline lookup ────────────────────────────────────────────────
 def get_baseline_ctr(channel: str, coupon: str = None, workday: str = None,
@@ -59,7 +61,7 @@ def get_baseline_ctr(channel: str, coupon: str = None, workday: str = None,
         return d["渠道_x_标题字数"]["data"][f"{ch}_{char_range}"]
 
     # 渠道 × 计划类型
-    if plan_type in ("AARRPlan", "普通Plan", "常规Plan") and f"{ch}_{plan_type}" in d.get("渠道_x_计划类型", {}).get("data", {}):
+    if plan_type in ("AARRPlan", "普通Plan") and f"{ch}_{plan_type}" in d.get("渠道_x_计划类型", {}).get("data", {}):
         return d["渠道_x_计划类型"]["data"][f"{ch}_{plan_type}"]
 
     # 渠道 × 预算owner
@@ -85,10 +87,28 @@ def get_baseline_ctr(channel: str, coupon: str = None, workday: str = None,
 def get_time_multiplier(time_str: str) -> float:
     if not time_str:
         return 1.0
-    m = re.search(r"\b(\d{1,2})\b", str(time_str))
-    if not m:
+    s = str(time_str).strip()
+    # 四级回退：HH:MM > X-Y区间(取中点) > HH时 > 任意数字
+    # 注：区间分支必须在 HH时 之前，否则 "8-10时" 会被 HH时 抢先匹配成 10
+    hour = None
+    m = re.search(r"(\d{1,2})\s*:\s*\d{1,2}", s)
+    if m:
+        hour = int(m.group(1))
+    else:
+        m = re.search(r"(\d{1,2})\s*[-~]\s*(\d{1,2})", s)
+        if m:
+            lo, hi = int(m.group(1)), int(m.group(2))
+            hour = (lo + hi) // 2 if lo <= hi else (hi + lo) // 2
+        else:
+            m = re.search(r"(\d{1,2})\s*时", s)
+            if m:
+                hour = int(m.group(1))
+            else:
+                m = re.search(r"(\d{1,2})", s)
+                if m:
+                    hour = int(m.group(1))
+    if hour is None or not (0 <= hour <= 23):
         return 1.0
-    hour = int(m.group(1))
     td = BASELINE.get("dimensions", {}).get("时段_小时", {}).get("data", {})
     if not td:
         return 1.0
@@ -181,9 +201,15 @@ def build_context_for_llm(baseline: dict) -> str:
 
     char_data = d.get("渠道_x_标题字数", {}).get("data", {})
     if char_data:
-        lines.append("\n各渠道最优标题字数：")
-        for ch, sug in OPTIMAL_CHARS.items():
-            lines.append(f"  标题字数建议（参考，降权）：{sug}")
+        # 按渠道聚合，每个渠道只输出 CTR Top 3 区间（参考维度，prompt 已降权）
+        lines.append("\n各渠道高CTR标题字数区间（仅参考，降权）：")
+        by_ch: dict = {}
+        for k, v in char_data.items():
+            ch, rng = k.split("_", 1)
+            by_ch.setdefault(ch, []).append((rng, v))
+        for ch, items in by_ch.items():
+            top3 = sorted(items, key=lambda x: -x[1])[:3]
+            lines.append(f"  {ch}: " + " | ".join(f"{rng}({v*100:.2f}%)" for rng, v in top3))
 
     plan_data = d.get("渠道_x_计划类型", {}).get("data", {})
     if plan_data:
@@ -233,9 +259,11 @@ def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context:
         owner    = str(row.get("预算Owner", "")).strip()
 
         # Build baseline context for this row
-        plan_v = plan if plan in ("AARRPlan", "普通Plan", "常规Plan") else None
+        plan_v = plan if plan in ("AARRPlan", "普通Plan") else None
+        char_range_v = get_char_range(title) if title else None
         bl_ctr = get_baseline_ctr(channel, coupon or None,
-                                  workday or None, plan_v, owner or None)
+                                  workday or None, plan_v, owner or None,
+                                  char_range_v)
         bl_str = f"{bl_ctr*100:.3f}%" if bl_ctr else "未知"
         tm = get_time_multiplier(time_s)
 
@@ -268,10 +296,15 @@ def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=4000,
+            timeout=60,
         )
         raw = resp.choices[0].message.content.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
+        # 容错：剥掉 LLM 在 ```json``` 代码块外的解释文字（如"下面是结果："等）
+        m = re.search(r"\[.*\]", raw, re.DOTALL)
+        if m:
+            raw = m.group(0)
         results = json.loads(raw)
         if not isinstance(results, list):
             results = [results]
@@ -313,6 +346,18 @@ with st.sidebar:
         batch_size = st.selectbox("每批条数", [5, 10, 15, 20], index=1)
 
     st.markdown("---")
+    # 当前数据基准（v3 起）
+    ver = BASELINE.get("version", "?")
+    ws = BASELINE.get("data_window_start", "?")
+    we = BASELINE.get("data_window_end", "?")
+    method = BASELINE.get("weighted_method", "")
+    hl = BASELINE.get("calibration_half_life_days", "")
+    st.markdown(f"**当前数据基准** v{ver}")
+    st.caption(f"窗口：{ws} ~ {we}")
+    if method == "exponential_decay" and hl:
+        st.caption(f"指数加权 · 半衰期 {hl} 天")
+
+    st.markdown("---")
     st.markdown("**渠道基准 CTR**")
     with st.expander("渠道基准CTR（点击展开）", expanded=False):
         ch_data = BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {})
@@ -334,6 +379,27 @@ uploaded_file = st.file_uploader(
     type=["csv", "xlsx", "xls"],
 )
 
+# ── 数据陈旧提醒（v3 起）──
+# 距 data_window_end 超过 90 天，提示运营跑 calibrate_baseline.py 重跑
+def _check_baseline_age(baseline, today, threshold_days: int = 90):
+    """返回数据距今天数；返回 None 表示 baseline 无 data_window_end 或格式异常"""
+    _we_str = baseline.get("data_window_end", "")
+    if not _we_str:
+        return None
+    try:
+        from datetime import datetime
+        _we = datetime.strptime(_we_str, "%Y-%m-%d").date()
+        return (today - _we).days
+    except ValueError:
+        return None
+
+_age_days = _check_baseline_age(BASELINE, __import__("datetime").date.today())
+if _age_days is not None and _age_days > 90:
+    st.warning(
+        f"基准数据已 {_age_days} 天未更新（最新 {BASELINE.get('data_window_end')}）。"
+        f"建议跑 python calibrate_baseline.py 重跑。"
+    )
+
 # ── Auto-detect columns ───────────────────────────────────────
 KNOWN_TITLE_ALIASES   = ["标题", "文案标题", "title", "标题列", "push_title", "标题title"]
 KNOWN_BODY_ALIASES    = ["内容", "正文", "文案", "content", "body", "push_content", "正文内容"]
@@ -342,12 +408,14 @@ KNOWN_COUPON_ALIASES  = ["是否用券", "用券", "coupon", "是否有券"]
 KNOWN_WORKDAY_ALIASES = ["工作日类型", "工作日", "workday", "日期类型"]
 KNOWN_TIME_ALIASES    = ["发送时间", "时间", "time", "推送时间", "send_time"]
 KNOWN_PLAN_ALIASES    = ["计划类型", "plan_type", "计划type", "AARRPlan"]
-KNOWN_OWNER_ALIASES   = ["预算owner", "owner", "预算Owner", "预算owner", "负责人"]
+KNOWN_OWNER_ALIASES   = ["预算owner", "owner", "预算Owner", "负责人"]
 
 def auto_detect(df, aliases):
+    # 严格匹配：列名必须与某个 alias 完全相等（不区分大小写），
+    # 避免 "title" 误匹配 "subtitle"/"title_new" 等子串
     for col in df.columns:
         for alias in aliases:
-            if alias.lower() == col.lower() or alias in col.lower():
+            if alias.lower() == col.lower():
                 return col
     return None
 
@@ -413,13 +481,15 @@ if uploaded_file:
     df_w["计划类型"]   = df_w[col_plan].astype(str)    if col_plan     != "（不填）" else ""
     df_w["预算Owner"]  = df_w[col_owner].astype(str)   if col_owner    != "（不填）" else ""
 
-    missing_title = not detected["标题"]
+    # 基于用户最终选中的 col_title 列的实际数据判断（而非自动识别结果）
+    title_valid = df_w["标题"].str.strip().str.lower().replace("nan", "").ne("").any()
+    missing_title = not title_valid
     st.dataframe(df_w[["标题","渠道","是否用券","工作日类型","发送时间","计划类型","预算Owner"]].head(3), use_container_width=True)
 
     if st.button("开始预测", type="primary", disabled=(not api_key or missing_title)):
         if not api_key:
             st.error("请先填API Key")
-        elif not df_w["标题"].str.strip().str.replace("nan","").any():
+        elif missing_title:
             st.error("标题列为空，请检查列映射是否正确")
         else:
             total = len(df_w)
@@ -431,7 +501,10 @@ if uploaded_file:
             for start in range(0, total, batch_size):
                 end = min(start + batch_size, total)
                 batch = df_w.iloc[start:end].to_dict("records")
-                results.extend(call_llm_batch(api_key, provider, batch, model, context_str))
+                batch_results = call_llm_batch(api_key, provider, batch, model, context_str)
+                results.extend(batch_results)
+                if len(batch_results) != len(batch):
+                    st.warning(f"⚠️ 第 {start//batch_size+1} 批返回 {len(batch_results)} 条（应有 {len(batch)} 条），缺失项已用空值填充")
                 pb.progress(end / total)
                 if end < total:
                     time.sleep(1.2)
@@ -452,6 +525,11 @@ if uploaded_file:
             )
 
             # 渠道基准（自动匹配最合适的维度组合）
+            # 兜底值：用 baseline 里所有渠道 CTR 的均值；若 baseline 也为空则 0.002
+            ch_data_avg = (sum(BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {}).values())
+                           / max(len(BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {})), 1)
+                           if BASELINE.get("dimensions", {}).get("渠道", {}).get("data", {}) else 0.002)
+
             def get_disp_bl(row):
                 ch = row["渠道"].strip()
                 coupon = "是" if "是" in row["是否用券"] else ("否" if "否" in row["是否用券"] else None)
@@ -459,8 +537,9 @@ if uploaded_file:
                 plan    = row["计划类型"].strip() if row["计划类型"].strip() in ("AARRPlan","普通Plan") else None
                 owner   = row["预算Owner"].strip() or None
                 tm      = get_time_multiplier(row["发送时间"])
-                v       = get_baseline_ctr(ch, coupon, workday, plan, owner)
-                base    = v if v else 0.002
+                char_range_v = get_char_range(row["标题"]) if row["标题"] else None
+                v       = get_baseline_ctr(ch, coupon, workday, plan, owner, char_range_v)
+                base    = v if v else ch_data_avg
                 return f"{base*100:.3f}%（时段×{tm:.2f}）"
 
             df_w["渠道基准"] = df_w.apply(get_disp_bl, axis=1)
@@ -560,11 +639,11 @@ else:
         "计划类型": [
             "AARRPlan",
             "AARRPlan",
-            "常规Plan",
-            "常规Plan",
-            "常规Plan",
-            "常规Plan",
-            "常规Plan",
+            "普通Plan",
+            "普通Plan",
+            "普通Plan",
+            "普通Plan",
+            "普通Plan",
         ],
         "预算Owner": [
             "MKT",
