@@ -10,6 +10,7 @@ import pandas as pd
 import json
 import re
 import time
+from datetime import datetime
 
 from styles import get_css
 
@@ -131,6 +132,30 @@ def get_time_suggestion(time_str: str, channel: str) -> str:
     return f"建议发送：{opt}（当前系数{tm:.2f}）" if time_str else ""
 
 
+def _derive_workday_from_time(time_str: str) -> str:
+    """从时间字符串里提取日期，按 weekday 派生『工作日/非工作日』。
+    支持常见日期格式（年月日 + 可选时分秒，分隔符 - / . 或 ISO T）。
+    解析失败返回空串（不阻断，仅不影响基线查找）。
+    """
+    if not time_str:
+        return ""
+    s = str(time_str).strip()
+    if s.lower() in ("nan", "nat", ""):
+        return ""
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d",
+        "%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M", "%Y.%m.%d",
+        "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
+    ):
+        try:
+            d = datetime.strptime(s, fmt)
+            return "工作日" if d.weekday() < 5 else "非工作日"
+        except ValueError:
+            continue
+    return ""
+
+
 def count_chars(text: str) -> int:
     return len(str(text).strip())
 
@@ -231,22 +256,6 @@ def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context:
     if not api_key:
         return [{"pred_ctr": None, "confidence": None, "suggestion": "请先填写API Key"}] * len(rows)
 
-    if provider == "SiliconFlow":
-        base_url = "https://api.siliconflow.cn/v1"
-    elif provider == "百度千帆":
-        base_url = "https://qianfan.baidubce.com/v2/coding"
-    elif provider == "OpenAI":
-        base_url = None
-    else:
-        return [{"pred_ctr": None, "confidence": None, "suggestion": f"不支持: {provider}"}] * len(rows)
-
-    try:
-        import openai
-    except ImportError:
-        return [{"pred_ctr": None, "confidence": None, "suggestion": "请安装 openai: pip install openai"}] * len(rows)
-
-    client = openai.OpenAI(api_key=api_key, base_url=base_url) if base_url else openai.OpenAI(api_key=api_key)
-
     batch_text = []
     for i, row in enumerate(rows, 1):
         title    = str(row.get("标题", ""))
@@ -290,21 +299,58 @@ def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context:
 
 直接返回JSON数组，不要其他文字："""
 
+    # ─── 分协议调用 ───
+    # minimax 走 Anthropic 协议，其他 provider 走 OpenAI 协议
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=4000,
-            timeout=60,
-        )
-        raw = resp.choices[0].message.content.strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        # 容错：剥掉 LLM 在 ```json``` 代码块外的解释文字（如"下面是结果："等）
-        m = re.search(r"\[.*\]", raw, re.DOTALL)
-        if m:
-            raw = m.group(0)
+        if provider == "MiniMax":
+            try:
+                import anthropic
+            except ImportError:
+                return [{"pred_ctr": None, "confidence": None, "suggestion": "请安装 anthropic: pip install anthropic"}] * len(rows)
+            client = anthropic.Anthropic(api_key=api_key, base_url="https://api.minimaxi.com/anthropic", timeout=60)
+            resp = client.messages.create(
+                model=model,
+                max_tokens=4000,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            # 过滤 text block（跳过 thinking 块）
+            text_parts = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
+            raw = "\n".join(text_parts).strip()
+        else:
+            if provider == "SiliconFlow":
+                base_url = "https://api.siliconflow.cn/v1"
+            elif provider == "百度千帆":
+                base_url = "https://qianfan.baidubce.com/v2/coding"
+            elif provider == "OpenAI":
+                base_url = None
+            else:
+                return [{"pred_ctr": None, "confidence": None, "suggestion": f"不支持: {provider}"}] * len(rows)
+
+            try:
+                import openai
+            except ImportError:
+                return [{"pred_ctr": None, "confidence": None, "suggestion": "请安装 openai: pip install openai"}] * len(rows)
+
+            client = openai.OpenAI(api_key=api_key, base_url=base_url, timeout=60) if base_url else openai.OpenAI(api_key=api_key, timeout=60)
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=4000,
+                timeout=60,
+            )
+            raw = resp.choices[0].message.content.strip()
+    except Exception as e:
+        return [{"pred_ctr": None, "confidence": None, "suggestion": f"API错误: {str(e)[:50]}"}] * len(rows)
+
+    # JSON 解析（两个协议共用）
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    if m:
+        raw = m.group(0)
+    try:
         results = json.loads(raw)
         if not isinstance(results, list):
             results = [results]
@@ -317,8 +363,6 @@ def call_llm_batch(api_key: str, provider: str, rows: list, model: str, context:
         return results
     except json.JSONDecodeError as e:
         return [{"pred_ctr": None, "confidence": None, "suggestion": f"JSON失败: {str(e)[:50]}"}] * len(rows)
-    except Exception as e:
-        return [{"pred_ctr": None, "confidence": None, "suggestion": f"API错误: {str(e)[:50]}"}] * len(rows)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -335,11 +379,12 @@ st.markdown(f"""
 with st.sidebar:
     st.markdown("**API 配置**")
     with st.expander("API 配置", expanded=True):
-        api_key   = st.text_input("API Key", value="ce-v3/ALTAKSP-QmNPHghHzqzyoxZMVnzVo/c6b429d64ddc09c0c24d2c61a79ab30d1f1f5a55", type="password")
-        provider  = st.selectbox("API Provider", ["SiliconFlow", "百度千帆", "OpenAI"], index=1, help="推荐SiliconFlow或百度千帆（国内快）")
+        api_key   = st.text_input("API Key", value="sk--4XUFwAM5Sfal4M27lWTK-8nrVPI2cFy3XrkPu0LjP409K4QrSQPg12NdLcs2hrvv0CzvVOIKhRZhHTMXh1UcgLGa4LbXKKEJjPE0UBV2bN6DuMh6YobBTro", type="password")
+        provider  = st.selectbox("API Provider", ["MiniMax", "百度千帆", "SiliconFlow", "OpenAI"], index=0, help="推荐MiniMax（国内快，走Anthropic协议）")
         model_map = {
-            "SiliconFlow": ["deepseek-ai/DeepSeek-V3-0324", "Qwen/Qwen2.5-72B-Instruct", "anthropic/claude-3.5-sonnet"],
+            "MiniMax":     ["MiniMax-M3"],
             "百度千帆":    ["qianfan-code-latest"],
+            "SiliconFlow": ["deepseek-ai/DeepSeek-V3-0324", "Qwen/Qwen2.5-72B-Instruct", "anthropic/claude-3.5-sonnet"],
             "OpenAI": ["gpt-4o-mini", "gpt-4o"],
         }
         model      = st.selectbox("模型", model_map[provider])
@@ -476,10 +521,17 @@ if uploaded_file:
     df_w["内容"]       = df_w[col_content].astype(str)
     df_w["渠道"]       = df_w[col_channel].astype(str) if col_channel  != "（不填）" else ""
     df_w["是否用券"]   = df_w[col_coupon].astype(str)  if col_coupon   != "（不填）" else ""
-    df_w["工作日类型"] = df_w[col_workday].astype(str) if col_workday != "（不填）" else ""
     df_w["发送时间"]   = df_w[col_time].astype(str)    if col_time     != "（不填）" else ""
     df_w["计划类型"]   = df_w[col_plan].astype(str)    if col_plan     != "（不填）" else ""
     df_w["预算Owner"]  = df_w[col_owner].astype(str)   if col_owner    != "（不填）" else ""
+
+    # 工作日类型：用户填了用用户的；没填但有发送时间（含日期），从日期派生
+    if col_workday != "（不填）":
+        df_w["工作日类型"] = df_w[col_workday].astype(str)
+    elif col_time != "（不填）":
+        df_w["工作日类型"] = df_w["发送时间"].apply(_derive_workday_from_time)
+    else:
+        df_w["工作日类型"] = ""
 
     # 基于用户最终选中的 col_title 列的实际数据判断（而非自动识别结果）
     title_valid = df_w["标题"].str.strip().str.lower().replace("nan", "").ne("").any()

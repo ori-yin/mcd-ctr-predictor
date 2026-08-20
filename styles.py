@@ -22,21 +22,22 @@ def get_css() -> str:
 
   /* ─── Streamlit 顶部导航条 ─── */
   .st-emotion-cache-1kyxreq {{
-    background: {MCD_GOLD} !important;
+    background: #FFFFFF !important;
   }}
 
-  /* ─── 侧边栏：金色主题 ─── */
+  /* ─── 侧边栏：白底 + 金色顶边（参考 mcd-content-rank）── */
   [data-testid="stSidebar"] {{
-    background: {MCD_GOLD} !important;
-    border-right: 3px solid rgba(0,0,0,0.08);
+    background: #FFFFFF !important;
+    border-right: 1px solid #E8E8E8;
+    border-top: 3px solid {MCD_GOLD};
   }}
 
   /* ─── 侧边栏文件上传区 ─── */
   [data-testid="stSidebar"] [data-testid="stFileUploader"] > div > div {{
-    border: 1px solid rgba(0,0,0,0.15) !important;
+    border: 1px solid #E0E0E0 !important;
     border-radius: 8px !important;
     padding: 6px 10px !important;
-    background: rgba(255,255,255,0.6) !important;
+    background: #FFFFFF !important;
   }}
 
   [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
@@ -56,20 +57,19 @@ def get_css() -> str:
     font-weight: 700;
     font-size: 12px;
     letter-spacing: 0.04em;
-    text-transform: uppercase;
     margin-bottom: 4px;
   }}
 
   [data-testid="stSidebar"] hr {{
-    border-color: rgba(0,0,0,0.15) !important;
+    border-color: #EFEFEF !important;
     margin: 12px 0;
   }}
 
   [data-testid="stSidebar"] .stSelectbox > div > div,
   [data-testid="stSidebar"] .stTextInput > div > div,
   [data-testid="stSidebar"] .stDateInput > div > div {{
-    background: rgba(255,255,255,0.6) !important;
-    border: 1px solid rgba(0,0,0,0.12) !important;
+    background: #FFFFFF !important;
+    border: 1px solid #E0E0E0 !important;
     border-radius: 10px !important;
     color: #000000 !important;
   }}

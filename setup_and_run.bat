@@ -46,6 +46,7 @@ python -c "import streamlit"   >nul 2>&1 || (echo       [X] streamlit   missing 
 python -c "import pandas"      >nul 2>&1 || (echo       [X] pandas      missing & set NEED_INSTALL=1)
 python -c "import openpyxl"    >nul 2>&1 || (echo       [X] openpyxl    missing & set NEED_INSTALL=1)
 python -c "import openai"      >nul 2>&1 || (echo       [X] openai      missing & set NEED_INSTALL=1)
+python -c "import anthropic"   >nul 2>&1 || (echo       [X] anthropic   missing & set NEED_INSTALL=1)
 
 if %NEED_INSTALL%==0 (
     echo       All dependencies OK, skipping install
